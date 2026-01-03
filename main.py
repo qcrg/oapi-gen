@@ -105,6 +105,10 @@ class SchemaType:
 		return {SystemInclude("optional")}
 
 
+TAG_SUFFIX = "Tag"
+OPTIONAL_TAG_SUFFIX = "OptionalTag"
+
+
 @dataclass
 class Enum(SchemaType):
 	members: List[str]
@@ -117,7 +121,8 @@ class Enum(SchemaType):
 			",\n".join(["\t" + member for member in self.members]),
 			"};",
 			"",
-			f"struct {self.get_tag_target_type()} {{}};",
+			f"struct {self.get_schema_target_type()}{TAG_SUFFIX} {{}};",
+			f"struct {self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX} {{}};",
 		]
 		return "\n".join(lines)
 
@@ -127,7 +132,9 @@ class Enum(SchemaType):
 
 	@override
 	def get_tag_target_type(self) -> str:
-		return f"{self.get_schema_target_type()}Tag"
+		if self.required:
+			return f"{self.get_schema_target_type()}{TAG_SUFFIX}"
+		return f"{self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX}"
 
 
 @dataclass
@@ -147,7 +154,8 @@ class Obj(SchemaType):
 				],
 				"};",
 				"",
-				f"struct {self.get_tag_target_type()} {{}};",
+				f"struct {self.get_schema_target_type()}{TAG_SUFFIX} {{}};",
+				f"struct {self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX} {{}};",
 			]
 		)
 
@@ -168,7 +176,9 @@ class Obj(SchemaType):
 
 	@override
 	def get_tag_target_type(self) -> str:
-		return f"{self.get_schema_target_type()}Tag"
+		if self.required:
+			return f"{self.get_schema_target_type()}{TAG_SUFFIX}"
+		return f"{self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX}"
 
 
 @dataclass
@@ -400,19 +410,27 @@ def create_folder(dest_dir: Path) -> Path:
 
 
 def create_helpers_file(folder: Path):
+	def get_struct(name):
+		return [
+			f"struct {name}{TAG_SUFFIX} {{}};",
+			f"struct {name}{OPTIONAL_TAG_SUFFIX} {{}};",
+		]
+
 	helpers = "\n".join(
 		[
 			"#pragma once",
 			"",
 			"#include <nlohmann/json.hpp>",
 			"",
-			"struct StringTag {};",
-			"struct NumberTag {};",
-			"struct IntegerTag {};",
-			"struct BooleanTag {};",
-			"struct AnyTag {};",
+			*get_struct("String"),
+			*get_struct("Number"),
+			*get_struct("Integer"),
+			*get_struct("Boolean"),
+			*get_struct("AnySchema"),
 			"template<class...>",
-			"struct TupleTag {};",
+			get_struct("Tuple")[0],
+			"template<class...>",
+			get_struct("Tuple")[1],
 		]
 	)
 	with open(folder / "helpers.hxx", "w") as f:
