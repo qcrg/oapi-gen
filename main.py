@@ -14,25 +14,21 @@ from typing import (
 	List,
 	Literal,
 	Optional,
-	Protocol,
 	Set,
-	Tuple,
-	cast,
+	Type,
 	override,
 )
 
+import humps
 import pydash
 from pygments import formatters, highlight, lexers
 
 
 class JSONEncoder(json.JSONEncoder):
 	def default(self, o: Any) -> Any:
-		if isinstance(o, Obj):
+		if isinstance(o, SchemaType):
 			return {
-				"type": o.type,
-				"properties": o.properties,
-				"items": o.items,
-				"required": o.required,
+				"type": o.__class__,
 			}
 		return super().default(o)
 
@@ -84,7 +80,7 @@ class Include:
 
 	def to_string(self) -> str:
 		ext = "" if self.ext is None else "." + self.ext
-		return f"#include {self._opener}{ext}{self._closer}"
+		return f"#include {self._opener}{self.name}{ext}{self._closer}"
 
 
 @dataclass(frozen=True)
@@ -98,21 +94,14 @@ class ProjectInclude(Include):
 	_opener: str = field(init=False, default='"')
 	_closer: str = field(init=False, default='"')
 
-
-@dataclass
-class Obj:
-	type: SchemaTypes
-	properties: Optional[Dict[str, "Obj"]] = None
-	items: Optional["Obj"] = None
-	prefix_items: Optional[List["Obj"]] = None
-	required: bool = False
-	ref: Optional[str] = None
-	enum: Optional[List[str]] = None
+	def __post_init__(self):
+		object.__setattr__(self, "name", humps.depascalize(self.name))
 
 
 @dataclass
-class SchemaType(Protocol):
+class SchemaType:
 	name: str
+	required: bool = field(init=False, default=True)
 
 	@abstractmethod
 	def to_string(self) -> str: ...
@@ -121,7 +110,9 @@ class SchemaType(Protocol):
 	def get_lang_type(self) -> str: ...
 
 	def get_includes(self) -> Set[Include]:
-		return set()
+		if self.required:
+			return set()
+		return {SystemInclude("optional")}
 
 
 @dataclass
@@ -149,7 +140,11 @@ class Ref(SchemaType):
 
 	@override
 	def to_string(self) -> str:
-		return f"\n{self.get_lang_type()} {self.name};"
+		if self.required:
+			return f"{self.get_lang_type()} {to_cxx_name(self.name)};"
+		return (
+			f"std::optional<{self.get_lang_type()}> {to_cxx_name(self.name)};"
+		)
 
 	@override
 	def get_lang_type(self) -> str:
@@ -157,7 +152,7 @@ class Ref(SchemaType):
 
 	@override
 	def get_includes(self) -> Set[Include]:
-		return {ProjectInclude(self.ref_type, "hpp")}
+		return {*super().get_includes(), ProjectInclude(self.ref_type, "hxx")}
 
 
 @dataclass
@@ -166,7 +161,9 @@ class Array(SchemaType):
 
 	@override
 	def to_string(self) -> str:
-		return f"\n{self.get_lang_type()} {self.name}"
+		if self.required:
+			return f"{self.get_lang_type()} {self.name};"
+		return f"std::optional<{self.get_lang_type()}> {self.name};"
 
 	@override
 	def get_lang_type(self) -> str:
@@ -175,13 +172,14 @@ class Array(SchemaType):
 	@override
 	def get_includes(self) -> Set[Include]:
 		return {
+			*super().get_includes(),
 			SystemInclude("vector"),
 			*self.children_types.get_includes(),
 		}
 
 
 @dataclass
-class Obj_(SchemaType):
+class Obj(SchemaType):
 	properties: Dict[str, SchemaType]
 
 	@override
@@ -191,8 +189,8 @@ class Obj_(SchemaType):
 				f"struct {self.name}",
 				"{",
 				*[
-					f"\t{prop_type} {prepare_prop_name(prop_name)};"
-					for prop_name, prop_type in self.properties.items()
+					f"\t{field_type.to_string()}"
+					for field_type in self.properties.values()
 				],
 				"};",
 			]
@@ -207,10 +205,7 @@ class Obj_(SchemaType):
 		includes = set()
 		for prop in self.properties.values():
 			includes = includes.union(prop.get_includes())
-		return {
-			SystemInclude("tuple"),
-			*includes,
-		}
+		return {*super().get_includes(), *includes}
 
 
 @dataclass
@@ -219,7 +214,9 @@ class TupleType(SchemaType):
 
 	@override
 	def to_string(self) -> str:
-		return f"{self.get_lang_type()} {self.name};"
+		if self.required:
+			return f"{self.get_lang_type()} {self.name};"
+		return f"std::optional<{self.get_lang_type()}> {self.name};"
 
 	@override
 	def get_lang_type(self) -> str:
@@ -232,6 +229,7 @@ class TupleType(SchemaType):
 		for m in self.member_types:
 			includes = includes.union(m.get_includes())
 		return {
+			*super().get_includes(),
 			SystemInclude("tuple"),
 			*includes,
 		}
@@ -241,7 +239,11 @@ class TupleType(SchemaType):
 class Primitive(SchemaType):
 	@override
 	def to_string(self) -> str:
-		return f"{self.get_lang_type()} {self.name};"
+		if self.required:
+			return f"{self.get_lang_type()} {to_cxx_name(self.name)};"
+		return (
+			f"std::optional<{self.get_lang_type()}> {to_cxx_name(self.name)};"
+		)
 
 
 @dataclass
@@ -252,7 +254,7 @@ class String(Primitive):
 
 	@override
 	def get_includes(self) -> Set[Include]:
-		return {SystemInclude("string")}
+		return {*super().get_includes(), SystemInclude("string")}
 
 
 @dataclass
@@ -284,69 +286,71 @@ class AnySchemaType(Primitive):
 
 	@override
 	def get_includes(self) -> Set[Include]:
-		return {SystemInclude("any")}
+		return {*super().get_includes(), SystemInclude("any")}
 
 
-def parse_schema(root: Dict[str, Any], obj: Dict[str, Any]) -> Obj:
-	items = None
-	properties = None
-	prefix_items = None
-	type_: SchemaTypes
-	enum = None
+def make_primitive_schema_type(
+	field_name: str, primitive: PrimitiveSchemaTypes
+) -> SchemaType:
+	view: Dict[str, Type[Primitive]] = {
+		"string": String,
+		"number": Number,
+		"integer": Integer,
+		"boolean": Boolean,
+		"any": AnySchemaType,
+	}
+	return view[primitive](field_name)
 
+
+def parse_schema(
+	root: Dict[str, Any], field_name: str, obj: Dict[str, Any]
+) -> SchemaType:
 	if "allOf" in obj:
-		ref = obj["allOf"][0]["$ref"]
-		return Obj("ref", ref=ref)
+		ref = base_name(obj["allOf"][0]["$ref"])
+		return Ref(field_name, ref)
 	if "$ref" in obj:
-		ref = obj["$ref"]
-		return Obj("ref", ref=ref)
-	if "type" not in obj:
-		return Obj("any")
-	try:
-		match obj["type"]:
-			case "array":
-				if "prefixItems" in obj:
-					prefix_items = []
-					for prefix_item in obj["prefixItems"]:
-						prefix_items.append(parse_schema(root, prefix_item))
-					type_ = "tuple"
-				else:
-					items = parse_schema(root, obj["items"])
-					type_ = "array"
-			case "object":
-				type_ = "object"
-				properties = {}
-				required: List[str] = obj.get("required") or []
-				if "properties" in obj:
-					for name, value in obj["properties"].items():
-						properties[name] = parse_schema(root, value)
-						properties[name].required = name in required
-			case _:
-				if "enum" in obj:
-					type_ = "enum"
-					enum = obj["enum"]
-				else:
-					type_ = obj["type"]
-	except Exception:
-		prettify(obj)
-		raise
+		ref = base_name(obj["$ref"])
+		return Ref(field_name, ref)
 
-	return Obj(
-		type=type_,
-		items=items,
-		properties=properties,
-		prefix_items=prefix_items,
-		enum=enum,
-	)
+	if "type" not in obj:
+		return AnySchemaType(field_name)
+
+	if "enum" in obj:
+		return Enum(field_name, obj["enum"])
+
+	match obj["type"]:
+		case "array":
+			if "prefixItems" in obj:
+				member_types = []
+				for member in obj["prefixItems"]:
+					member_types.append(
+						parse_schema(root, "/* logical error */", member)
+					)
+				return TupleType(field_name, member_types)
+			else:
+				children_types = parse_schema(
+					root, "/* logical error */", obj["items"]
+				)
+				return Array(field_name, children_types)
+		case "object":
+			properties = {}
+			required: List[str] = obj.get("required") or []
+			if "properties" in obj:
+				for prop_name, value in obj["properties"].items():
+					properties[prop_name] = parse_schema(root, prop_name, value)
+					properties[prop_name].required = prop_name in required
+					print(required)
+			return Obj(field_name, properties)
+
+	return make_primitive_schema_type(field_name, obj["type"])
 
 
 def parse_schemas(root):
-	schemas: dict[str, Obj] = {}
+	schemas: dict[str, SchemaType] = {}
 	for name, schema in pydash.get(root, "components.schemas").items():
 		if name in schemas:
 			continue
-		schemas[name] = parse_schema(root, schema)
-		schemas[name].required = True
+		schemas[name] = parse_schema(root, name, schema)
 	return schemas
 
 
@@ -354,111 +358,29 @@ def base_name(ref: str):
 	return ref.split("/")[-1]
 
 
-def get_basic_cxx_name(schema_type: str) -> str:
-	match schema_type:
-		case "any":
-			prop_class = "std::any"
-		case "integer":
-			prop_class = "int"
-		case "number":
-			prop_class = "float"
-		case "string":
-			prop_class = "std::string"
-		case "boolean":
-			prop_class = "bool"
-		case _:
-			print(schema_type)
-			prop_class = "void*"
-	return prop_class
-
-
-def get_prop_class_and_include(
-	parent: Obj, prop_val: Obj
-) -> Tuple[str, Optional[str]]:
-	prop_include = None
-	match prop_val.type:
-		case "ref":
-			prop_class = base_name(cast(str, prop_val.ref))
-		case "array":
-			items = cast(Obj, prop_val.items)
-			if items.ref is not None:
-				array_items = base_name(cast(str, items.ref))
-			else:
-				array_items = get_basic_cxx_name(items.type)
-			prop_class = f"std::vector<{array_items}>"
-			prop_include = f"{array_items}.hxx"
-		case _:
-			prop_class = get_basic_cxx_name(parent.type)
-	return prop_class, prop_include
-
-
-def prepare_prop_name(name: str) -> str:
+def to_cxx_name(name: str) -> str:
 	reserved_names = ["operator"]
 	if name in reserved_names:
 		return name + "_"
 	return name
 
 
-def write_schema(
-	class_type: str,
-	class_name: str,
-	system_include: Set[str],
-	project_include: Set[str],
-	properties: Dict[str, str],
-	file: IO,
-):
-	file.writelines(
-		[
-			"#pragma once\n\n",
-			*[f"#include <{sys_incl}>\n" for sys_incl in system_include],
-			"\n",
-			*[f'#include "{proj_incl}"\n' for proj_incl in project_include],
-			"\n",
-			f"{class_type} {class_name}\n{{\n",
-			*[
-				f"\t{prop_type} {prepare_prop_name(prop_name)};\n"
-				for prop_name, prop_type in properties.items()
-			],
-			"};\n",
-		]
-	)
+def from_cxx_name(name: str) -> str:
+	return name.rstrip("_")
 
 
-def dump_schema(name: str, obj: Obj, file: IO):
-	class_type = None
-	system_include = {"nlohmann/json.hpp", "cpr/cpr.h"}
-	project_include = set()
-	properties = {}
-
-	match obj.type:
-		case "object":
-			class_type = "struct"
-
-			props = cast(Dict[str, Obj], obj.properties).items()
-			for prop_name, prop_val in props:
-				match prop_val.type:
-					case "ref":
-						project_include.add(
-							f"{base_name(cast(str, prop_val.ref))}.hxx"
-						)
-					case "any":
-						system_include.add("any")
-					case "string":
-						system_include.add("string")
-					case "array":
-						system_include.add("vector")
-				properties[prop_name], prop_include = (
-					get_prop_class_and_include(obj, prop_val)
-				)
-				if prop_include is not None:
-					project_include.add(prop_include)
-		case "enum":
-			class_type = "enum class"
-		case _:
-			class_type = "error"
-
-	write_schema(
-		class_type, name, system_include, project_include, properties, file
+def dump_schema(schema: SchemaType, file: IO):
+	includes = sorted(list(schema.get_includes()), key=lambda i: i.to_string())
+	file.write(
+		"\n".join(
+			[
+				"#pragma once",
+				"",
+				*[sys_incl.to_string() for sys_incl in includes],
+				"",
+				schema.to_string(),
+			]
+		)
 	)
 
 
@@ -492,10 +414,9 @@ def main():
 	schemas = parse_schemas(oapi)
 	folder = create_folder(Path("./"))
 	for name, schema in schemas.items():
-		if not (schema.type == "object" or schema.type == "enum"):
-			continue
-		with open(folder / (name + ".hxx"), "w") as f:
-			dump_schema(name, schema, f)
+		if isinstance(schema, Obj) or isinstance(schema, Enum):
+			with open(folder / (humps.depascalize(name) + ".hxx"), "w") as f:
+				dump_schema(schema, f)
 
 
 if __name__ == "__main__":
