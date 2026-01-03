@@ -48,22 +48,9 @@ def get(obj, path: str):
 
 
 PrimitiveSchemaTypes = Literal[
-	"string",
-	"number",
-	"integer",
-	"boolean",
-	"any",
+	"string", "number", "integer", "boolean", "any", "array", "tuple", "ref"
 ]
-
-ComplexSchemaTypes = Literal[
-	"enum",
-	"ref",
-	"array",
-	"object",
-	"tuple",
-]
-
-
+ComplexSchemaTypes = Literal["object", "enum"]
 SchemaTypes = PrimitiveSchemaTypes | ComplexSchemaTypes
 
 
@@ -78,7 +65,7 @@ class Include:
 	_opener: str = field(init=False)
 	_closer: str = field(init=False)
 
-	def to_string(self) -> str:
+	def to_cxx(self) -> str:
 		ext = "" if self.ext is None else "." + self.ext
 		return f"#include {self._opener}{self.name}{ext}{self._closer}"
 
@@ -104,10 +91,13 @@ class SchemaType:
 	required: bool = field(init=False, default=True)
 
 	@abstractmethod
-	def to_string(self) -> str: ...
+	def to_cxx(self) -> str: ...
 
 	@abstractmethod
-	def get_lang_type(self) -> str: ...
+	def get_schema_target_type(self) -> str: ...
+
+	@abstractmethod
+	def get_tag_target_type(sefl) -> str: ...
 
 	def get_includes(self) -> Set[Include]:
 		if self.required:
@@ -120,34 +110,93 @@ class Enum(SchemaType):
 	members: List[str]
 
 	@override
-	def to_string(self) -> str:
+	def to_cxx(self) -> str:
 		lines = [
-			f"enum class {self.get_lang_type()}",
+			f"enum class {self.get_schema_target_type()}",
 			"{",
 			",\n".join(["\t" + member for member in self.members]),
 			"};",
+			"",
+			f"struct {self.get_tag_target_type()} {{}};",
 		]
 		return "\n".join(lines)
 
 	@override
-	def get_lang_type(self) -> str:
+	def get_schema_target_type(self) -> str:
 		return f"{self.name}"
+
+	@override
+	def get_tag_target_type(self) -> str:
+		return f"{self.get_schema_target_type()}Tag"
 
 
 @dataclass
-class Ref(SchemaType):
-	ref_type: str
+class Obj(SchemaType):
+	class_name: str
+	properties: Dict[str, SchemaType]
 
 	@override
-	def to_string(self) -> str:
-		if self.required:
-			return f"{self.get_lang_type()} {to_cxx_name(self.name)};"
-		return (
-			f"std::optional<{self.get_lang_type()}> {to_cxx_name(self.name)};"
+	def to_cxx(self) -> str:
+		return "\n".join(
+			[
+				f"struct {self.class_name}",
+				"{",
+				*[
+					f"\t{field_type.to_cxx()}"
+					for field_type in self.properties.values()
+				],
+				"};",
+				"",
+				f"struct {self.get_tag_target_type()} {{}};",
+			]
 		)
 
 	@override
-	def get_lang_type(self) -> str:
+	def get_schema_target_type(self) -> str:
+		return f"{self.class_name}"
+
+	@override
+	def get_includes(self) -> Set[Include]:
+		includes = set()
+		for prop in self.properties.values():
+			includes = includes.union(prop.get_includes())
+		return {
+			SystemInclude("nlohmann/json", "hpp"),
+			*super().get_includes(),
+			*includes,
+		}
+
+	@override
+	def get_tag_target_type(self) -> str:
+		return f"{self.get_schema_target_type()}Tag"
+
+
+@dataclass
+class Primitive(SchemaType):
+	@override
+	def to_cxx(self) -> str:
+		return f"{self.get_schema_target_type()} {to_cxx_name(self.name)};"
+
+	@override
+	def get_schema_target_type(self) -> str:
+		if self.required:
+			return self._get_primitive_lang_type()
+		return f"std::optional<{self._get_primitive_lang_type()}>"
+
+	@override
+	def get_includes(self) -> Set[Include]:
+		return {*super().get_includes(), ProjectInclude("helpers", "hxx")}
+
+	@abstractmethod
+	def _get_primitive_lang_type(self) -> str: ...
+
+
+@dataclass
+class Ref(Primitive):
+	ref_type: str
+
+	@override
+	def _get_primitive_lang_type(self) -> str:
 		return self.ref_type
 
 	@override
@@ -156,71 +205,31 @@ class Ref(SchemaType):
 
 
 @dataclass
-class Array(SchemaType):
-	children_types: SchemaType
+class Array(Primitive):
+	children_type: SchemaType
 
 	@override
-	def to_string(self) -> str:
-		if self.required:
-			return f"{self.get_lang_type()} {self.name};"
-		return f"std::optional<{self.get_lang_type()}> {self.name};"
-
-	@override
-	def get_lang_type(self) -> str:
-		return f"std::vector<{self.children_types.get_lang_type()}>"
+	def _get_primitive_lang_type(self) -> str:
+		return f"std::vector<{self.children_type.get_schema_target_type()}>"
 
 	@override
 	def get_includes(self) -> Set[Include]:
 		return {
 			*super().get_includes(),
 			SystemInclude("vector"),
-			*self.children_types.get_includes(),
+			*self.children_type.get_includes(),
 		}
 
 
 @dataclass
-class Obj(SchemaType):
-	properties: Dict[str, SchemaType]
-
-	@override
-	def to_string(self) -> str:
-		return "\n".join(
-			[
-				f"struct {self.name}",
-				"{",
-				*[
-					f"\t{field_type.to_string()}"
-					for field_type in self.properties.values()
-				],
-				"};",
-			]
-		)
-
-	@override
-	def get_lang_type(self) -> str:
-		return f"{self.name}"
-
-	@override
-	def get_includes(self) -> Set[Include]:
-		includes = set()
-		for prop in self.properties.values():
-			includes = includes.union(prop.get_includes())
-		return {*super().get_includes(), *includes}
-
-
-@dataclass
-class TupleType(SchemaType):
+class TupleType(Primitive):
 	member_types: List[SchemaType]
 
 	@override
-	def to_string(self) -> str:
-		if self.required:
-			return f"{self.get_lang_type()} {self.name};"
-		return f"std::optional<{self.get_lang_type()}> {self.name};"
-
-	@override
-	def get_lang_type(self) -> str:
-		types = ", ".join([m.get_lang_type() for m in self.member_types])
+	def _get_primitive_lang_type(self) -> str:
+		types = ", ".join(
+			[m.get_schema_target_type() for m in self.member_types]
+		)
 		return f"std::tuple<{types}>"
 
 	@override
@@ -236,20 +245,9 @@ class TupleType(SchemaType):
 
 
 @dataclass
-class Primitive(SchemaType):
-	@override
-	def to_string(self) -> str:
-		if self.required:
-			return f"{self.get_lang_type()} {to_cxx_name(self.name)};"
-		return (
-			f"std::optional<{self.get_lang_type()}> {to_cxx_name(self.name)};"
-		)
-
-
-@dataclass
 class String(Primitive):
 	@override
-	def get_lang_type(self) -> str:
+	def _get_primitive_lang_type(self) -> str:
 		return "std::string"
 
 	@override
@@ -260,28 +258,28 @@ class String(Primitive):
 @dataclass
 class Number(Primitive):
 	@override
-	def get_lang_type(self) -> str:
+	def _get_primitive_lang_type(self) -> str:
 		return "double"
 
 
 @dataclass
 class Integer(Primitive):
 	@override
-	def get_lang_type(self) -> str:
+	def _get_primitive_lang_type(self) -> str:
 		return "long"
 
 
 @dataclass
 class Boolean(Primitive):
 	@override
-	def get_lang_type(self) -> str:
+	def _get_primitive_lang_type(self) -> str:
 		return "bool"
 
 
 @dataclass
 class AnySchemaType(Primitive):
 	@override
-	def get_lang_type(self) -> str:
+	def _get_primitive_lang_type(self) -> str:
 		return "std::any"
 
 	@override
@@ -339,8 +337,7 @@ def parse_schema(
 				for prop_name, value in obj["properties"].items():
 					properties[prop_name] = parse_schema(root, prop_name, value)
 					properties[prop_name].required = prop_name in required
-					print(required)
-			return Obj(field_name, properties)
+			return Obj(field_name, field_name, properties)
 
 	return make_primitive_schema_type(field_name, obj["type"])
 
@@ -370,15 +367,15 @@ def from_cxx_name(name: str) -> str:
 
 
 def dump_schema(schema: SchemaType, file: IO):
-	includes = sorted(list(schema.get_includes()), key=lambda i: i.to_string())
+	includes = sorted(list(schema.get_includes()), key=lambda i: i.to_cxx())
 	file.write(
 		"\n".join(
 			[
 				"#pragma once",
 				"",
-				*[sys_incl.to_string() for sys_incl in includes],
+				*[sys_incl.to_cxx() for sys_incl in includes],
 				"",
-				schema.to_string(),
+				schema.to_cxx(),
 			]
 		)
 	)
@@ -402,6 +399,26 @@ def create_folder(dest_dir: Path) -> Path:
 		return path
 
 
+def create_helpers_file(folder: Path):
+	helpers = "\n".join(
+		[
+			"#pragma once",
+			"",
+			"#include <nlohmann/json.hpp>",
+			"",
+			"struct StringTag {};",
+			"struct NumberTag {};",
+			"struct IntegerTag {};",
+			"struct BooleanTag {};",
+			"struct AnyTag {};",
+			"template<class...>",
+			"struct TupleTag {};",
+		]
+	)
+	with open(folder / "helpers.hxx", "w") as f:
+		f.write(helpers)
+
+
 def main():
 	parser = ArgumentParser()
 	parser.add_argument("file")
@@ -413,6 +430,7 @@ def main():
 		oapi = json.load(file)
 	schemas = parse_schemas(oapi)
 	folder = create_folder(Path("./"))
+	create_helpers_file(folder)
 	for name, schema in schemas.items():
 		if isinstance(schema, Obj) or isinstance(schema, Enum):
 			with open(folder / (humps.depascalize(name) + ".hxx"), "w") as f:
