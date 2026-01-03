@@ -1,0 +1,192 @@
+{
+	"components": {
+		"schemas": {
+			"first": {
+				"title": "Product",
+				"description": "Схема для описания товара в интернет-магазине",
+				"type": "object",
+
+				"properties": {
+					"productId": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Уникальный идентификатор товара"
+					},
+
+					"productName": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100,
+						"description": "Название товара"
+					},
+
+					"price": {
+						"type": "number",
+						"minimum": 0,
+						"exclusiveMinimum": 0,
+						"description": "Цена товара"
+					},
+
+					"currency": {
+						"type": "string",
+						"enum": ["USD", "EUR", "RUB", "GBP"],
+						"default": "USD"
+					},
+
+					"inStock": {
+						"type": "boolean",
+						"default": false
+					},
+
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 0,
+						"maxItems": 10,
+						"uniqueItems": true
+					},
+
+					"dimensions": {
+						"type": "object",
+						"properties": {
+							"length": { "type": "number" },
+							"width": { "type": "number" },
+							"height": { "type": "number" }
+						},
+						"required": ["length", "width", "height"]
+					},
+
+					"warehouses": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": {
+								"location": { "type": "string" },
+								"quantity": { "type": "integer", "minimum": 0 }
+							},
+							"required": ["location"]
+						}
+					},
+
+					"metadata": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "string"
+						},
+						"maxProperties": 20
+					},
+
+					"discountPercentage": {
+						"type": ["number", "null"],
+						"minimum": 0,
+						"maximum": 100
+					},
+
+					"createdAt": {
+						"type": "string",
+						"format": "date-time"
+					}
+				},
+
+				"required": ["productId", "productName", "price"],
+
+				"additionalProperties": false
+			},
+			"second": {
+				"title": "Product",
+				"description": "Схема для описания товара в интернет-магазине",
+				"type": "object",
+
+				"properties": {
+					"productId": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "Уникальный идентификатор товара"
+					},
+
+					"productName": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100,
+						"description": "Название товара"
+					},
+
+					"price": {
+						"type": "number",
+						"minimum": 0,
+						"exclusiveMinimum": 0,
+						"description": "Цена товара"
+					},
+
+					"currency": {
+						"type": "string",
+						"enum": ["USD", "EUR", "RUB", "GBP"],
+						"default": "USD"
+					},
+
+					"inStock": {
+						"type": "boolean",
+						"default": false
+					},
+
+					"tags": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"minItems": 0,
+						"maxItems": 10,
+						"uniqueItems": true
+					},
+
+					"dimensions": {
+						"type": "object",
+						"properties": {
+							"length": { "type": "number" },
+							"width": { "type": "number" },
+							"height": { "type": "number" }
+						},
+						"required": ["length", "width", "height"]
+					},
+
+					"warehouses": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": {
+								"location": { "type": "string" },
+								"quantity": { "type": "integer", "minimum": 0 }
+							},
+							"required": ["location"]
+						}
+					},
+
+					"metadata": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "string"
+						},
+						"maxProperties": 20
+					},
+
+					"discountPercentage": {
+						"type": ["number", "null"],
+						"minimum": 0,
+						"maximum": 100
+					},
+
+					"createdAt": {
+						"type": "string",
+						"format": "date-time"
+					}
+				},
+
+				"required": ["productId", "productName", "price"],
+
+				"additionalProperties": false
+			}
+		}
+	}
+}
