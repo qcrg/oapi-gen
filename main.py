@@ -97,16 +97,26 @@ class SchemaType:
 	def get_schema_target_type(self) -> str: ...
 
 	@abstractmethod
-	def get_tag_target_type(sefl) -> str: ...
+	def _get_tag_target_type(self) -> str: ...
+
+	def get_tag_target_type(self) -> str:
+		tag = self._get_tag_target_type()
+		if self.required:
+			return tag
+		return f"{CXX_OPTIONAL_TAG_TYPE}<{tag}>"
 
 	def get_includes(self) -> Set[Include]:
+		base_includes: Set[Include] = {ProjectInclude("helpers", "hxx")}
 		if self.required:
-			return set()
-		return {SystemInclude("optional")}
+			return base_includes
+		return {
+			*base_includes,
+			SystemInclude("optional"),
+		}
 
 
-TAG_SUFFIX = "Tag"
-OPTIONAL_TAG_SUFFIX = "OptionalTag"
+CXX_TAG_SUFFIX = "Tag"
+CXX_OPTIONAL_TAG_TYPE = "OptionalHelperTag"
 
 
 @dataclass
@@ -115,26 +125,68 @@ class Enum(SchemaType):
 
 	@override
 	def to_cxx(self) -> str:
-		lines = [
+		lines: List[str] = [
+			*self._make_cxx_enum_lines(),
+			"",
+			*self._make_cxx_helper_lines(),
+			"",
+			*self._make_cxx_from_json_lines(),
+			"",
+			*self._make_cxx_optional_from_json_lines(),
+		]
+		return "\n".join(lines)
+
+	def _make_cxx_enum_lines(self) -> List[str]:
+		return [
 			f"enum class {self.get_schema_target_type()}",
 			"{",
 			",\n".join(["\t" + member for member in self.members]),
 			"};",
-			"",
-			f"struct {self.get_schema_target_type()}{TAG_SUFFIX} {{}};",
-			f"struct {self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX} {{}};",
 		]
-		return "\n".join(lines)
+
+	def _make_cxx_helper_lines(self) -> List[str]:
+		return [
+			f"struct {self._get_tag_target_type()} {{}};",
+		]
+
+	def _make_cxx_from_json_lines(self) -> List[str]:
+		def make_stmt(m):
+			return f'\t case simple_hash("{m}"): return {self.get_schema_target_type()}::{m};'
+
+		return [
+			f"inline constexpr {self.get_schema_target_type()}",
+			"from_json(",
+			"\tconst nlohmann::json& json,",
+			f"\t{self._get_tag_target_type()}",
+			") {",
+			"\tconst std::string& value = json;",
+			"\tswitch (simple_hash(value)) {",
+			*[make_stmt(m) for m in self.members],
+			"\t}",
+			"\tthrow value;",
+			"}",
+		]
+
+	def _make_cxx_optional_from_json_lines(self) -> List[str]:
+		return [
+			f"inline constexpr std::optional<{self.get_schema_target_type()}>",
+			"from_json(",
+			"\tconst nlohmann::json& json,",
+			f"\t{CXX_OPTIONAL_TAG_TYPE}<{self._get_tag_target_type()}>",
+			") {",
+			"\treturn json.is_string()",
+			f"\t\t? std::optional{'{'}from_json(json, {self._get_tag_target_type()}{'{}'}){'}'}",
+			"\t\t: std::nullopt;",
+			"}",
+		]
 
 	@override
 	def get_schema_target_type(self) -> str:
 		return f"{self.name}"
 
 	@override
-	def get_tag_target_type(self) -> str:
-		if self.required:
-			return f"{self.get_schema_target_type()}{TAG_SUFFIX}"
-		return f"{self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX}"
+	def _get_tag_target_type(self) -> str:
+		return f"{self.get_schema_target_type()}{CXX_TAG_SUFFIX}"
 
 
 @dataclass
@@ -144,20 +196,66 @@ class Obj(SchemaType):
 
 	@override
 	def to_cxx(self) -> str:
-		return "\n".join(
-			[
-				f"struct {self.class_name}",
-				"{",
-				*[
-					f"\t{field_type.to_cxx()}"
-					for field_type in self.properties.values()
-				],
-				"};",
-				"",
-				f"struct {self.get_schema_target_type()}{TAG_SUFFIX} {{}};",
-				f"struct {self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX} {{}};",
-			]
-		)
+		lines: List[str] = [
+			*self._make_cxx_class_lines(),
+			"",
+			*self._make_cxx_helper_lines(),
+			"",
+			*self._make_cxx_from_json_lines(),
+			"",
+			*self._make_cxx_optional_from_json_lines(),
+		]
+		return "\n".join(lines)
+
+	def _make_cxx_class_lines(self) -> List[str]:
+		return [
+			f"struct {self.class_name}",
+			"{",
+			*[
+				f"\t{field_type.to_cxx()}"
+				for field_type in self.properties.values()
+			],
+			"};",
+		]
+
+	def _make_cxx_helper_lines(self) -> List[str]:
+		return [
+			f"struct {self._get_tag_target_type()} {{}};",
+		]
+
+	def _make_cxx_from_json_lines(self) -> List[str]:
+		def from_json_param(name: str, prop: SchemaType):
+			return f'\t\t.{to_cxx_name(name)} = from_json(json["{name}"], {prop._get_tag_target_type()}{"{}"})'
+
+		return [
+			f"inline constexpr {self.get_schema_target_type()}",
+			"from_json(",
+			"\tconst nlohmann::json& json,",
+			f"\t{self._get_tag_target_type()}",
+			") {",
+			"\treturn {",
+			",\n".join(
+				[
+					from_json_param(name, prop)
+					for name, prop in self.properties.items()
+				]
+			),
+			"\t};",
+			"}",
+		]
+
+	def _make_cxx_optional_from_json_lines(self) -> List[str]:
+		return [
+			f"inline constexpr std::optional<{self.get_schema_target_type()}>",
+			"from_json(",
+			"\tconst nlohmann::json& json,",
+			f"\t{CXX_OPTIONAL_TAG_TYPE}<{self._get_tag_target_type()}>",
+			") {",
+			"\treturn json.is_string()",
+			f"\t\t? std::optional{'{'}from_json(json, {self._get_tag_target_type()}{'{}'}){'}'}",
+			"\t\t: std::nullopt;",
+			"}",
+		]
 
 	@override
 	def get_schema_target_type(self) -> str:
@@ -175,10 +273,8 @@ class Obj(SchemaType):
 		}
 
 	@override
-	def get_tag_target_type(self) -> str:
-		if self.required:
-			return f"{self.get_schema_target_type()}{TAG_SUFFIX}"
-		return f"{self.get_schema_target_type()}{OPTIONAL_TAG_SUFFIX}"
+	def _get_tag_target_type(self) -> str:
+		return f"{self.get_schema_target_type()}{CXX_TAG_SUFFIX}"
 
 
 @dataclass
@@ -193,10 +289,6 @@ class Primitive(SchemaType):
 			return self._get_primitive_lang_type()
 		return f"std::optional<{self._get_primitive_lang_type()}>"
 
-	@override
-	def get_includes(self) -> Set[Include]:
-		return {*super().get_includes(), ProjectInclude("helpers", "hxx")}
-
 	@abstractmethod
 	def _get_primitive_lang_type(self) -> str: ...
 
@@ -210,6 +302,10 @@ class Ref(Primitive):
 		return self.ref_type
 
 	@override
+	def _get_tag_target_type(self) -> str:
+		return self.ref_type + CXX_TAG_SUFFIX
+
+	@override
 	def get_includes(self) -> Set[Include]:
 		return {*super().get_includes(), ProjectInclude(self.ref_type, "hxx")}
 
@@ -221,6 +317,10 @@ class Array(Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return f"std::vector<{self.children_type.get_schema_target_type()}>"
+
+	@override
+	def _get_tag_target_type(self) -> str:
+		return f"Vector{CXX_TAG_SUFFIX}<{self.children_type.get_schema_target_type()}>"
 
 	@override
 	def get_includes(self) -> Set[Include]:
@@ -243,6 +343,11 @@ class TupleType(Primitive):
 		return f"std::tuple<{types}>"
 
 	@override
+	def _get_tag_target_type(self) -> str:
+		types = map(lambda m: m.get_schema_target_type(), self.member_types)
+		return f"Vector{CXX_TAG_SUFFIX}<{', '.join(list(types))}>"
+
+	@override
 	def get_includes(self) -> Set[Include]:
 		includes = set()
 		for m in self.member_types:
@@ -254,8 +359,13 @@ class TupleType(Primitive):
 		}
 
 
+class PrimitiveHelper:
+	def _get_tag_target_type(self) -> str:
+		return self.__class__.__name__ + CXX_TAG_SUFFIX
+
+
 @dataclass
-class String(Primitive):
+class String(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return "std::string"
@@ -266,28 +376,28 @@ class String(Primitive):
 
 
 @dataclass
-class Number(Primitive):
+class Number(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return "double"
 
 
 @dataclass
-class Integer(Primitive):
+class Integer(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return "long"
 
 
 @dataclass
-class Boolean(Primitive):
+class Boolean(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return "bool"
 
 
 @dataclass
-class AnySchemaType(Primitive):
+class AnySchemaType(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
 		return "std::any"
@@ -409,32 +519,101 @@ def create_folder(dest_dir: Path) -> Path:
 		return path
 
 
-def create_helpers_file(folder: Path):
-	def get_struct(name):
-		return [
-			f"struct {name}{TAG_SUFFIX} {{}};",
-			f"struct {name}{OPTIONAL_TAG_SUFFIX} {{}};",
-		]
-
-	helpers = "\n".join(
+def make_helpers_for_primitive(prim: Type) -> str:
+	class_name = prim.__name__
+	class_tag = class_name + CXX_TAG_SUFFIX
+	cxx_type = prim("")._get_primitive_lang_type()
+	same = ["{", "\treturn json;", "}", ""]
+	return "\n".join(
 		[
-			"#pragma once",
+			f"struct {class_tag} {{}};",
 			"",
-			"#include <nlohmann/json.hpp>",
-			"",
-			*get_struct("String"),
-			*get_struct("Number"),
-			*get_struct("Integer"),
-			*get_struct("Boolean"),
-			*get_struct("AnySchema"),
-			"template<class...>",
-			get_struct("Tuple")[0],
-			"template<class...>",
-			get_struct("Tuple")[1],
+			f"inline {cxx_type} from_json(const nlohmann::json& json, {class_tag})",
+			*same,
+			f"inline std::optional<{cxx_type}> from_json(const nlohmann::json& json, {CXX_OPTIONAL_TAG_TYPE}<{class_tag}>)",
+			*same,
 		]
 	)
+
+
+HELPERS = f"""#pragma once
+
+#include <nlohmann/json.hpp>
+
+constexpr size_t simple_hash(const char *str)
+{{
+	size_t hash = 5381;
+	while (*str) {{
+		hash = ((hash << 5) + hash) + static_cast<uint8_t>(*str);
+		str++;
+	}}
+	return hash;
+}}
+
+constexpr size_t simple_hash(const std::string &str)
+{{
+	return simple_hash(str.c_str());
+}}
+
+template<class>
+struct {CXX_OPTIONAL_TAG_TYPE} {{}};
+
+{make_helpers_for_primitive(String)}
+{make_helpers_for_primitive(Number)}
+{make_helpers_for_primitive(Integer)}
+{make_helpers_for_primitive(Boolean)}
+{make_helpers_for_primitive(AnySchemaType)}
+template<class>
+struct Vector{CXX_TAG_SUFFIX} {{}};
+
+template<class T>
+inline std::vector<T>
+from_json(
+	const nlohmann::json &json,
+	Vector{CXX_TAG_SUFFIX}<T>
+) {{
+	(void)json;
+	return {{}};
+}}
+
+template<class T>
+inline std::optional<std::vector<T>>
+from_json(
+	const nlohmann::json &json,
+	{CXX_OPTIONAL_TAG_TYPE}<Vector{CXX_TAG_SUFFIX}<T>>
+) {{
+	(void)json;
+	return {{}};
+}}
+
+template<class...>
+struct Tuple{CXX_TAG_SUFFIX} {{}};
+
+template<class... Ts>
+inline std::tuple<Ts...>
+from_json(
+	const nlohmann::json &json,
+	Tuple{CXX_TAG_SUFFIX}<Ts...>
+) {{
+	(void)json;
+	return {{}};
+}}
+
+template<class... Ts>
+inline std::optional<std::tuple<Ts...>>
+from_json(
+	const nlohmann::json &json,
+	{CXX_OPTIONAL_TAG_TYPE}<Tuple{CXX_TAG_SUFFIX}<Ts...>>
+) {{
+	(void)json;
+	return {{}};
+}}
+"""
+
+
+def create_helpers_file(folder: Path):
 	with open(folder / "helpers.hxx", "w") as f:
-		f.write(helpers)
+		f.write(HELPERS)
 
 
 def main():
