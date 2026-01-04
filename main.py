@@ -199,11 +199,15 @@ class Obj(SchemaType):
 		lines: List[str] = [
 			*self._make_cxx_class_lines(),
 			"",
-			*self._make_cxx_helper_lines(),
+			*self._make_cxx_schema_tag(),
+			"",
+			*self._make_cxx_tag_helper(),
 			"",
 			*self._make_cxx_from_json_lines(),
 			"",
 			*self._make_cxx_optional_from_json_lines(),
+			"",
+			*self._make_cxx_class_from_json(),
 		]
 		return "\n".join(lines)
 
@@ -215,12 +219,23 @@ class Obj(SchemaType):
 				f"\t{field_type.to_cxx()}"
 				for field_type in self.properties.values()
 			],
+			"",
+			f"\tstatic {self.class_name} from_json(const nlohmann::json &json);",
 			"};",
 		]
 
-	def _make_cxx_helper_lines(self) -> List[str]:
+	def _make_cxx_schema_tag(self) -> List[str]:
 		return [
 			f"struct {self._get_tag_target_type()} {{}};",
+		]
+
+	def _make_cxx_tag_helper(self) -> List[str]:
+		return [
+			"template<>",
+			f"struct TagHelper<{self.get_schema_target_type()}>",
+			"{",
+			f"\tusing Tag = {self._get_tag_target_type()};",
+			"};",
 		]
 
 	def _make_cxx_from_json_lines(self) -> List[str]:
@@ -254,6 +269,17 @@ class Obj(SchemaType):
 			"\treturn json.is_string()",
 			f"\t\t? std::optional{'{'}from_json(json, {self._get_tag_target_type()}{'{}'}){'}'}",
 			"\t\t: std::nullopt;",
+			"}",
+		]
+
+	def _make_cxx_class_from_json(self) -> List[str]:
+		cxx_type = self.get_schema_target_type()
+		cxx_tag_type = self._get_tag_target_type()
+		return [
+			f"inline {cxx_type}",
+			f"{cxx_type}::from_json(const nlohmann::json &json)",
+			"{",
+			f"\treturn ::from_json(json, {cxx_tag_type}{{}});",
 			"}",
 		]
 
@@ -528,6 +554,12 @@ def make_helpers_for_primitive(prim: Type) -> str:
 		[
 			f"struct {class_tag} {{}};",
 			"",
+			"template<>",
+			f"struct TagHelper<{cxx_type}>",
+			"{",
+			f"\tusing Tag = {class_tag};",
+			"};",
+			"",
 			f"inline {cxx_type} from_json(const nlohmann::json& json, {class_tag})",
 			*same,
 			f"inline std::optional<{cxx_type}> from_json(const nlohmann::json& json, {CXX_OPTIONAL_TAG_TYPE}<{class_tag}>)",
@@ -558,6 +590,9 @@ constexpr size_t simple_hash(const std::string &str)
 template<class>
 struct {CXX_OPTIONAL_TAG_TYPE} {{}};
 
+template<class>
+struct TagHelper {{}};
+
 {make_helpers_for_primitive(String)}
 {make_helpers_for_primitive(Number)}
 {make_helpers_for_primitive(Integer)}
@@ -567,13 +602,23 @@ template<class>
 struct Vector{CXX_TAG_SUFFIX} {{}};
 
 template<class T>
+struct TagHelper<std::vector<T>>
+{{
+	using Tag = VectorTag<T>;
+}};
+
+template<class T>
 inline std::vector<T>
 from_json(
 	const nlohmann::json &json,
 	Vector{CXX_TAG_SUFFIX}<T>
 ) {{
-	(void)json;
-	return {{}};
+	std::vector<T> res;
+	res.reserve(json.size());
+	for (const nlohmann::json &elem : json) {{
+		res.push_back(from_json(elem, typename TagHelper<T>::Tag{{}}));
+	}}
+	return res;
 }}
 
 template<class T>
@@ -588,6 +633,12 @@ from_json(
 
 template<class...>
 struct Tuple{CXX_TAG_SUFFIX} {{}};
+
+template<class... Ts>
+struct TagHelper<std::tuple<Ts...>>
+{{
+	using Tag = TupleTag<Ts...>;
+}};
 
 template<class... Ts>
 inline std::tuple<Ts...>
