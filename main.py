@@ -426,7 +426,8 @@ class Boolean(PrimitiveHelper, Primitive):
 class AnySchemaType(PrimitiveHelper, Primitive):
 	@override
 	def _get_primitive_lang_type(self) -> str:
-		return "std::any"
+		# return "std::any"
+		return "nlohmann::json"
 
 	@override
 	def get_includes(self) -> Set[Include]:
@@ -545,11 +546,23 @@ def create_folder(dest_dir: Path) -> Path:
 		return path
 
 
-def make_helpers_for_primitive(prim: Type) -> str:
+def make_helpers_for_primitive(prim: Type, is_any=False) -> str:
 	class_name = prim.__name__
 	class_tag = class_name + CXX_TAG_SUFFIX
 	cxx_type = prim("")._get_primitive_lang_type()
 	same = ["{", "\treturn json;", "}", ""]
+	to_json = [
+		f"inline nlohmann::json to_json(const {cxx_type} &val)",
+		"{",
+		"\treturn val;",
+		"}",
+		"",
+		f"inline nlohmann::json to_json(const std::optional<{cxx_type}> &val)",
+		"{",
+		"\treturn val;",
+		"}",
+	]
+
 	return "\n".join(
 		[
 			f"struct {class_tag} {{}};",
@@ -564,6 +577,8 @@ def make_helpers_for_primitive(prim: Type) -> str:
 			*same,
 			f"inline std::optional<{cxx_type}> from_json(const nlohmann::json& json, {CXX_OPTIONAL_TAG_TYPE}<{class_tag}>)",
 			*same,
+			*to_json,
+			"",
 		]
 	)
 
@@ -597,7 +612,7 @@ struct TagHelper {{}};
 {make_helpers_for_primitive(Number)}
 {make_helpers_for_primitive(Integer)}
 {make_helpers_for_primitive(Boolean)}
-{make_helpers_for_primitive(AnySchemaType)}
+{make_helpers_for_primitive(AnySchemaType, True)}
 template<class>
 struct Vector{CXX_TAG_SUFFIX} {{}};
 
@@ -630,6 +645,26 @@ from_json(
 	if (json.is_array())
 		return from_json(json, Vector{CXX_TAG_SUFFIX}<T>{{}});
 	return {{}};
+}}
+
+template<class T>
+inline nlohmann::json
+to_json(const std::vector<T> &vec)
+{{
+	nlohmann::json res;
+	for (const T &val : vec) {{
+		res.push_back(to_json(val));
+	}}
+	return res;
+}}
+
+template<class T>
+inline nlohmann::json
+to_json(const std::optional<std::vector<T>> &vec)
+{{
+	if (!vec.has_value())
+		return {{}};
+	return to_json(vec.value());
 }}
 
 template<class...>
@@ -673,6 +708,36 @@ from_json(
 	if (json.is_null())
 		return {{}};
 	return from_json(json, TupleTag<Ts...>{{}});
+}}
+
+template<class... Ts, size_t... Is>
+inline nlohmann::json
+to_json_tuple_impl(
+	const std::tuple<Ts...> &tuple,
+	std::index_sequence<Is...>
+) {{
+	return nlohmann::json{{
+		to_json(std::get<Is>(tuple))...
+	}};
+}}
+
+template<class... Ts>
+inline nlohmann::json
+to_json(const std::tuple<Ts...> &tuple)
+{{
+	return to_json_tuple_impl(
+		tuple,
+		std::index_sequence_for<Ts...>{{}}
+	);
+}}
+
+template<class... Ts>
+inline nlohmann::json
+to_json(const std::optional<std::tuple<Ts...>> &tuple)
+{{
+	if (tuple.is_null())
+		return {{}};
+	return to_json(tuple.value());
 }}
 """
 
