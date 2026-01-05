@@ -116,7 +116,7 @@ class SchemaType:
 
 
 CXX_TAG_SUFFIX = "Tag"
-CXX_OPTIONAL_TAG_TYPE = "OptionalHelperTag"
+CXX_OPTIONAL_TAG_TYPE = "OptionalTag"
 
 
 @dataclass
@@ -627,7 +627,8 @@ from_json(
 	const nlohmann::json &json,
 	{CXX_OPTIONAL_TAG_TYPE}<Vector{CXX_TAG_SUFFIX}<T>>
 ) {{
-	(void)json;
+	if (json.is_array())
+		return from_json(json, Vector{CXX_TAG_SUFFIX}<T>{{}});
 	return {{}};
 }}
 
@@ -640,14 +641,27 @@ struct TagHelper<std::tuple<Ts...>>
 	using Tag = TupleTag<Ts...>;
 }};
 
+template<class... Ts, size_t... Is>
+inline std::tuple<Ts...>
+from_json_tuple_impl(
+	const nlohmann::json& json,
+	std::index_sequence<Is...>
+) {{
+	return std::tuple<Ts...>{{
+		from_json(json[Is], typename TagHelper<Ts>::Tag{{}})...
+	}};
+}}
+
 template<class... Ts>
 inline std::tuple<Ts...>
 from_json(
 	const nlohmann::json &json,
 	Tuple{CXX_TAG_SUFFIX}<Ts...>
 ) {{
-	(void)json;
-	return {{}};
+	return from_json_tuple_impl(
+		json,
+		std::index_sequence_for<Ts...>{{}}
+	);
 }}
 
 template<class... Ts>
@@ -656,8 +670,9 @@ from_json(
 	const nlohmann::json &json,
 	{CXX_OPTIONAL_TAG_TYPE}<Tuple{CXX_TAG_SUFFIX}<Ts...>>
 ) {{
-	(void)json;
-	return {{}};
+	if (json.is_null())
+		return {{}};
+	return from_json(json, TupleTag<Ts...>{{}});
 }}
 """
 
