@@ -133,6 +133,10 @@ class Enum(SchemaType):
 			*self._make_cxx_from_json_lines(),
 			"",
 			*self._make_cxx_optional_from_json_lines(),
+			"",
+			*self._make_cxx_to_json_lines(),
+			"",
+			*self._make_cxx_optional_to_json_lines(),
 		]
 		return "\n".join(lines)
 
@@ -151,7 +155,7 @@ class Enum(SchemaType):
 
 	def _make_cxx_from_json_lines(self) -> List[str]:
 		def make_stmt(m):
-			return f'\t case simple_hash("{m}"): return {self.get_schema_target_type()}::{m};'
+			return f'\t\tcase simple_hash("{m}"): return {self.get_schema_target_type()}::{m};'
 
 		return [
 			f"inline constexpr {self.get_schema_target_type()}",
@@ -177,6 +181,36 @@ class Enum(SchemaType):
 			"\treturn json.is_string()",
 			f"\t\t? std::optional{'{'}from_json(json, {self._get_tag_target_type()}{'{}'}){'}'}",
 			"\t\t: std::nullopt;",
+			"}",
+		]
+
+	def _make_cxx_to_json_lines(self) -> List[str]:
+		def make_stmt(m):
+			return (
+				f'\t\tcase {self.get_schema_target_type()}::{m}: return "{m}";'
+			)
+
+		return [
+			"inline constexpr nlohmann::json",
+			"to_json(",
+			f"\t{self.get_schema_target_type()} val",
+			") {",
+			"\tswitch (val) {",
+			*[make_stmt(m) for m in self.members],
+			"\t}",
+			"\tthrow val;",
+			"}",
+		]
+
+	def _make_cxx_optional_to_json_lines(self) -> List[str]:
+		return [
+			"inline constexpr nlohmann::json",
+			"to_json(",
+			f"\tstd::optional<{self.get_schema_target_type()}> val",
+			") {",
+			"\tif (!val.has_value())",
+			"\t\treturn {};",
+			"\treturn to_json(val.value());",
 			"}",
 		]
 
