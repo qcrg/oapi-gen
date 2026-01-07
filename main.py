@@ -242,6 +242,12 @@ class Obj(SchemaType):
 			*self._make_cxx_optional_from_json_lines(),
 			"",
 			*self._make_cxx_class_from_json(),
+			"",
+			*self._make_cxx_to_json_lines(),
+			"",
+			*self._make_cxx_optional_to_json_lines(),
+			"",
+			*self._make_cxx_class_to_json(),
 		]
 		return "\n".join(lines)
 
@@ -255,6 +261,7 @@ class Obj(SchemaType):
 			],
 			"",
 			f"\tstatic {self.class_name} from_json(const nlohmann::json &json);",
+			"\tnlohmann::json to_json() const;",
 			"};",
 		]
 
@@ -314,6 +321,37 @@ class Obj(SchemaType):
 			f"{cxx_type}::from_json(const nlohmann::json &json)",
 			"{",
 			f"\treturn ::from_json(json, {cxx_tag_type}{{}});",
+			"}",
+		]
+
+	def _make_cxx_to_json_lines(self) -> List[str]:
+		def to_json_param(name: str):
+			return f'\t\t{{"{from_cxx_name(name)}", to_json(o.{name})}}'
+
+		return [
+			f"inline nlohmann::json to_json(const {self.get_schema_target_type()} &o)",
+			"{",
+			"\treturn nlohmann::json{",
+			",\n".join([to_json_param(name) for name in self.properties]),
+			"\t};",
+			"}",
+		]
+
+	def _make_cxx_optional_to_json_lines(self) -> List[str]:
+		return [
+			f"inline nlohmann::json to_json(const std::optional<{self.get_schema_target_type()}> &o)",
+			"{",
+			"\tif (!o.has_value())",
+			"\t\treturn {};",
+			"\treturn to_json(o.value());",
+			"}",
+		]
+
+	def _make_cxx_class_to_json(self) -> List[str]:
+		return [
+			f"inline nlohmann::json {self.get_schema_target_type()}::to_json() const",
+			"{",
+			"\treturn ::to_json(*this);",
 			"}",
 		]
 
